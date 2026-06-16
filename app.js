@@ -1,5 +1,5 @@
 /* ============================================
-   DOMPET — App Logic (No API Key Required)
+   DOMPET v1.1 — Auto-Save + Edit
    ============================================ */
 
 // ---- Categories ----
@@ -21,7 +21,7 @@ const MONTH_NAMES = [
   'Juli','Agustus','September','Oktober','November','Desember'
 ];
 
-// ---- Keyword-Based Auto-Categorizer ----
+// ---- Keyword Auto-Categorizer (200+ Indonesian keywords) ----
 const KEYWORD_MAP = {
   'Food & Dining': [
     'makan','mie','nasi','ayam','bakso','sate','soto','rendang','gado','pecel',
@@ -145,14 +145,14 @@ const KEYWORD_MAP = {
     'gas','lpg','elpiji','tabung gas','bright gas',
     'sewa','kost','kos','kontrakan','kontrak','apartment','apartemen',
     'ipl','maintenance','iuran','rt','rw','sampah','kebersihan',
-    'service','laundry','dry clean','cuci baju','setrika',
+    'service ac','laundry','dry clean','cuci baju','setrika',
     'cleaning','bersih','cleaning service','asisten rumah tangga','art',
     'renovasi','perbaikan','tukang','plumber','pipa','keran',
     'furniture','ikea','informa','ace hardware','depo bangunan',
     'cat','lampu','bohlam','kasur','bantal','guling','sprei',
     'selimut','handuk','gorden','karpet','rak','lemari','meja','kursi',
     'sofa','cermin','jam dinding','hanger','jemuran',
-    'kompor','kulkas','mesin cuci','ac','kipas angin','setrika',
+    'kompor','kulkas','mesin cuci','ac','kipas angin',
     'vacuum','blender','rice cooker','dispenser','microwave','oven',
     'panci','wajan','spatula','pisau dapur','talenan','piring',
     'gelas','mangkok','sendok','garpu','tupperware',
@@ -167,7 +167,7 @@ const KEYWORD_MAP = {
     'speaker','bluetooth','mouse','keyboard','monitor','webcam',
     'printer','scanner','harddisk','hard disk','ssd','ram','flash disk',
     'flashdisk','memory card','micro sd','usb','hub','dongle',
-    'case','casing','cover','adapter','power bank','powerbank',
+    'case hp','casing hp','cover hp','adapter','power bank','powerbank',
     'screen protector','tempered glass','anti gores',
     'tripod','gimbal','ring light','mic','microphone',
     'tablet','ipad','tab','smartwatch','smart watch','smart band',
@@ -199,11 +199,8 @@ const KEYWORD_MAP = {
 
 function categorize(description) {
   const input = description.toLowerCase().trim();
-
   let bestMatch = null;
   let bestLength = 0;
-
-  // Try to find the longest matching keyword (more specific = better)
   for (const [category, keywords] of Object.entries(KEYWORD_MAP)) {
     for (const keyword of keywords) {
       if (input.includes(keyword) && keyword.length > bestLength) {
@@ -212,11 +209,10 @@ function categorize(description) {
       }
     }
   }
-
   return bestMatch || 'Others';
 }
 
-// ---- Config (localStorage) ----
+// ---- Config ----
 const Config = {
   get(key)        { return localStorage.getItem('dompet_' + key) || ''; },
   set(key, value) { localStorage.setItem('dompet_' + key, value); },
@@ -227,11 +223,14 @@ const Config = {
 // ---- State ----
 let accessToken = null;
 let tokenClient = null;
-let pendingTx   = null;
-let allTransactions = [];
-let dashboardMonth  = new Date();
+let allTransactions = [];   // { timestamp, description, amount, category, month, week, sheetRow }
+let recentItems = [];       // same shape, max 5
+let dashboardMonth = new Date();
 let pieChart = null;
 let barChart = null;
+
+// ---- Edit state ----
+let editTarget = null; // { source: 'recent'|'history', index, sheetRow, ... }
 
 // ============================================
 // INITIALIZATION
@@ -241,23 +240,25 @@ document.addEventListener('DOMContentLoaded', () => {
   loadSettingsUI();
   tryInitGoogle();
 
-  // Amount input: auto-format with dots
   const amtInput = document.getElementById('input-amount');
   amtInput.addEventListener('input', () => {
     let raw = amtInput.value.replace(/[^\d]/g, '');
-    if (raw) {
-      amtInput.value = Number(raw).toLocaleString('id-ID');
-    }
+    if (raw) amtInput.value = Number(raw).toLocaleString('id-ID');
   });
-
-  // Enter key submits on amount field
   amtInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') handleSubmit();
+  });
+
+  // Also format edit amount field
+  const editAmt = document.getElementById('edit-amount');
+  editAmt.addEventListener('input', () => {
+    let raw = editAmt.value.replace(/[^\d]/g, '');
+    if (raw) editAmt.value = Number(raw).toLocaleString('id-ID');
   });
 });
 
 // ============================================
-// GOOGLE AUTH (Google Identity Services)
+// GOOGLE AUTH
 // ============================================
 
 function tryInitGoogle() {
@@ -274,60 +275,34 @@ function tryInitGoogle() {
 }
 
 function onTokenResponse(resp) {
-  if (resp.error) {
-    showToast('Google auth gagal: ' + resp.error, 'error');
-    return;
-  }
+  if (resp.error) { showToast('Google auth gagal: ' + resp.error, 'error'); return; }
   accessToken = resp.access_token;
   showToast('Signed in ✓', 'success');
   updateAuthUI(true);
 }
 
 function handleSignIn() {
-  if (!Config.clientId) {
-    showToast('Isi Google Client ID dulu di Settings', 'error');
-    return;
-  }
-  if (!tokenClient) {
-    tryInitGoogle();
-    setTimeout(handleSignIn, 800);
-    return;
-  }
+  if (!Config.clientId) { showToast('Isi Google Client ID dulu di Settings', 'error'); return; }
+  if (!tokenClient) { tryInitGoogle(); setTimeout(handleSignIn, 800); return; }
   tokenClient.requestAccessToken({ prompt: 'consent' });
 }
 
 function handleSignOut() {
-  if (accessToken) {
-    google.accounts.oauth2.revoke(accessToken);
-  }
+  if (accessToken) google.accounts.oauth2.revoke(accessToken);
   accessToken = null;
   updateAuthUI(false);
   showToast('Signed out', 'info');
 }
 
 function updateAuthUI(signedIn) {
-  const headerAuth = document.getElementById('auth-status');
-  const settingsAuth = document.getElementById('settings-auth');
-
-  if (signedIn) {
-    headerAuth.textContent = '● Connected';
-    settingsAuth.innerHTML = `
-      <p class="signed-in-info">Terhubung ke Google Sheets</p>
-      <button class="btn-signout" onclick="handleSignOut()">Sign Out</button>
-    `;
-  } else {
-    headerAuth.textContent = '';
-    settingsAuth.innerHTML = `
-      <button class="btn-google" onclick="handleSignIn()">Sign in with Google</button>
-    `;
-  }
+  document.getElementById('auth-status').textContent = signedIn ? '● Connected' : '';
+  document.getElementById('settings-auth').innerHTML = signedIn
+    ? '<p class="signed-in-info">Terhubung ke Google Sheets</p><button class="btn-signout" onclick="handleSignOut()">Sign Out</button>'
+    : '<button class="btn-google" onclick="handleSignIn()">Sign in with Google</button>';
 }
 
 async function ensureToken() {
-  if (!accessToken) {
-    showToast('Sign in ke Google dulu', 'error');
-    throw new Error('Not authenticated');
-  }
+  if (!accessToken) { showToast('Sign in ke Google dulu', 'error'); throw new Error('Not authenticated'); }
   return accessToken;
 }
 
@@ -338,40 +313,47 @@ async function ensureToken() {
 const SHEET_NAME = 'Transactions';
 const SHEET_RANGE = `${SHEET_NAME}!A:F`;
 
-async function sheetsAPI(method, range, body) {
+async function sheetsAPI(method, range, body, queryParams) {
   const token = await ensureToken();
-  const baseUrl = `https://sheets.googleapis.com/v4/spreadsheets/${Config.sheetId}/values/${range}`;
-  const opts = {
-    method,
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-  };
+  let url = `https://sheets.googleapis.com/v4/spreadsheets/${Config.sheetId}/values/${range}`;
+  if (queryParams) url += '?' + new URLSearchParams(queryParams).toString();
+
+  const opts = { method, headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
 
-  const res = await fetch(
-    method === 'POST' ? `${baseUrl}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS` : baseUrl,
-    opts
-  );
+  const res = await fetch(url, opts);
 
   if (res.status === 401) {
-    accessToken = null;
-    updateAuthUI(false);
+    accessToken = null; updateAuthUI(false);
     showToast('Sesi habis, silakan sign in ulang', 'error');
     throw new Error('Token expired');
   }
-
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error?.message || `Sheets API error ${res.status}`);
   }
-
   return res.json();
 }
 
 async function appendRow(row) {
-  return sheetsAPI('POST', SHEET_RANGE, { values: [row] });
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${Config.sheetId}/values/${SHEET_RANGE}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+  const token = await ensureToken();
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ values: [row] }),
+  });
+  if (res.status === 401) { accessToken = null; updateAuthUI(false); showToast('Sesi habis', 'error'); throw new Error('Token expired'); }
+  if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error?.message || 'Sheets error'); }
+  const data = await res.json();
+  // Extract row number from updatedRange like "Transactions!A5:F5"
+  const match = data.updates?.updatedRange?.match(/!A(\d+):/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+async function updateRow(sheetRow, row) {
+  const range = `${SHEET_NAME}!A${sheetRow}:F${sheetRow}`;
+  return sheetsAPI('PUT', range, { values: [row] }, { valueInputOption: 'USER_ENTERED' });
 }
 
 async function readAllRows() {
@@ -383,53 +365,31 @@ async function initSheetHeaders() {
   try {
     await ensureToken();
     const token = accessToken;
-
     const checkUrl = `https://sheets.googleapis.com/v4/spreadsheets/${Config.sheetId}`;
-    const metaRes = await fetch(checkUrl, {
-      headers: { 'Authorization': `Bearer ${token}` },
-    });
-
-    if (!metaRes.ok) {
-      showToast('Gagal akses Sheet. Cek Sheet ID.', 'error');
-      return;
-    }
+    const metaRes = await fetch(checkUrl, { headers: { 'Authorization': `Bearer ${token}` } });
+    if (!metaRes.ok) { showToast('Gagal akses Sheet. Cek Sheet ID.', 'error'); return; }
 
     const meta = await metaRes.json();
-    const sheetExists = meta.sheets?.some(s => s.properties?.title === SHEET_NAME);
-
-    if (!sheetExists) {
+    if (!meta.sheets?.some(s => s.properties?.title === SHEET_NAME)) {
       await fetch(`${checkUrl}:batchUpdate`, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          requests: [{ addSheet: { properties: { title: SHEET_NAME } } }],
-        }),
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requests: [{ addSheet: { properties: { title: SHEET_NAME } } }] }),
       });
     }
 
     const headerUrl = `https://sheets.googleapis.com/v4/spreadsheets/${Config.sheetId}/values/${SHEET_NAME}!A1:F1?valueInputOption=USER_ENTERED`;
     await fetch(headerUrl, {
       method: 'PUT',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        values: [['Timestamp', 'Description', 'Amount', 'Category', 'Month', 'Week']],
-      }),
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ values: [['Timestamp', 'Description', 'Amount', 'Category', 'Month', 'Week']] }),
     });
-
     showToast('Headers berhasil dibuat ✓', 'success');
-  } catch (e) {
-    showToast('Error: ' + e.message, 'error');
-  }
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
 }
 
 // ============================================
-// INPUT & SUBMISSION FLOW
+// INPUT — Auto-Save (No Confirmation Step)
 // ============================================
 
 async function handleSubmit() {
@@ -437,50 +397,114 @@ async function handleSubmit() {
   const amtEl  = document.getElementById('input-amount');
   const btn    = document.getElementById('btn-submit');
   const btnText = document.getElementById('btn-submit-text');
+  const btnLoader = document.getElementById('btn-submit-loader');
 
   const description = descEl.value.trim();
   const amount = parseInt(amtEl.value.replace(/[^\d]/g, ''), 10);
 
-  if (!description) {
-    showToast('Isi deskripsi dulu', 'error');
-    descEl.focus();
-    return;
-  }
-  if (!amount || amount <= 0) {
-    showToast('Isi jumlah yang valid', 'error');
-    amtEl.focus();
-    return;
-  }
+  if (!description) { showToast('Isi deskripsi dulu', 'error'); descEl.focus(); return; }
+  if (!amount || amount <= 0) { showToast('Isi jumlah yang valid', 'error'); amtEl.focus(); return; }
+  if (!accessToken) { showToast('Sign in ke Google dulu di Settings', 'error'); return; }
+  if (!Config.sheetId) { showToast('Isi Sheet ID dulu di Settings', 'error'); return; }
 
-  // Instant keyword-based categorization (no API call)
+  // Auto-categorize instantly
   const category = categorize(description);
 
-  pendingTx = { description, amount, category };
-  showCategoryConfirmation();
+  btn.disabled = true;
+  btnText.textContent = 'Menyimpan...';
+  btnLoader.classList.remove('hidden');
+
+  try {
+    const now = new Date();
+    const timestamp = now.toLocaleString('id-ID', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+    const monthStr = MONTH_NAMES[now.getMonth()] + ' ' + now.getFullYear();
+    const weekStr  = `Week ${getWeekNumber(now)}`;
+
+    const row = [timestamp, description, amount, category, monthStr, weekStr];
+    const sheetRow = await appendRow(row);
+
+    const cat = CATEGORIES.find(c => c.name === category) || CATEGORIES[9];
+    showToast(`${cat.emoji} ${category} — Rp ${amount.toLocaleString('id-ID')} ✓`, 'success');
+
+    // Add to recent with sheetRow for editing
+    recentItems.unshift({ timestamp, description, amount, category, month: monthStr, week: weekStr, sheetRow });
+    if (recentItems.length > 5) recentItems.pop();
+    renderRecent();
+
+    // Clear form
+    descEl.value = '';
+    amtEl.value = '';
+    descEl.focus();
+
+  } catch (e) {
+    showToast('Gagal simpan: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btnText.textContent = 'Tambah Pengeluaran';
+    btnLoader.classList.add('hidden');
+  }
 }
 
-function showCategoryConfirmation() {
-  const container = document.getElementById('category-confirm');
-  const chipsEl   = document.getElementById('category-chips');
+// ============================================
+// RECENT LIST (Input Tab)
+// ============================================
 
+function renderRecent() {
+  const el = document.getElementById('recent-list');
+  if (recentItems.length === 0) {
+    el.innerHTML = '<p class="empty-state">Belum ada pengeluaran hari ini</p>';
+    return;
+  }
+  el.innerHTML = recentItems.map((tx, i) => {
+    const cat = CATEGORIES.find(c => c.name === tx.category) || CATEGORIES[9];
+    return `<div class="transaction-item" onclick="openEdit('recent', ${i})">
+      <span class="tx-emoji">${cat.emoji}</span>
+      <div class="tx-details">
+        <div class="tx-desc">${escHtml(tx.description)}</div>
+        <div class="tx-cat">${tx.category}</div>
+      </div>
+      <div class="tx-right">
+        <div class="tx-amount">Rp ${tx.amount.toLocaleString('id-ID')}</div>
+      </div>
+      <span class="tx-edit-hint">✎</span>
+    </div>`;
+  }).join('');
+}
+
+// ============================================
+// EDIT MODAL
+// ============================================
+
+function openEdit(source, index) {
+  const tx = source === 'recent' ? recentItems[index] : allTransactions[index];
+  if (!tx) return;
+
+  editTarget = { source, index, sheetRow: tx.sheetRow, original: { ...tx } };
+
+  document.getElementById('edit-desc').value = tx.description;
+  document.getElementById('edit-amount').value = tx.amount.toLocaleString('id-ID');
+
+  // Render category chips
+  const chipsEl = document.getElementById('edit-category-chips');
   chipsEl.innerHTML = CATEGORIES.map(cat => {
-    const isSelected = cat.name === pendingTx.category;
-    return `<button class="cat-chip ${isSelected ? 'selected' : ''}"
-              style="${isSelected ? `background:${cat.color};border-color:${cat.color}` : ''}"
-              onclick="selectCategory('${cat.name}')">
+    const sel = cat.name === tx.category;
+    return `<button class="cat-chip ${sel ? 'selected' : ''}"
+              style="${sel ? `background:${cat.color};border-color:${cat.color}` : ''}"
+              data-cat="${cat.name}"
+              onclick="selectEditCategory(this, '${cat.name}')">
               ${cat.emoji} ${cat.name}
             </button>`;
   }).join('');
 
-  container.classList.remove('hidden');
-  container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  document.getElementById('edit-modal').classList.remove('hidden');
 }
 
-function selectCategory(name) {
-  pendingTx.category = name;
-  const chips = document.querySelectorAll('.cat-chip');
-  chips.forEach(chip => {
-    const cat = CATEGORIES.find(c => chip.textContent.includes(c.name));
+function selectEditCategory(el, name) {
+  document.querySelectorAll('#edit-category-chips .cat-chip').forEach(chip => {
+    const cat = CATEGORIES.find(c => c.name === chip.dataset.cat);
     if (cat && cat.name === name) {
       chip.classList.add('selected');
       chip.style.background = cat.color;
@@ -493,93 +517,57 @@ function selectCategory(name) {
   });
 }
 
-async function confirmSave() {
-  if (!pendingTx) return;
-
-  if (!accessToken) {
-    showToast('Sign in ke Google dulu di Settings', 'error');
-    return;
-  }
-
-  if (!Config.sheetId) {
-    showToast('Isi Sheet ID dulu di Settings', 'error');
-    return;
-  }
-
-  const now = new Date();
-  const timestamp = now.toLocaleString('id-ID', {
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-  });
-  const monthStr = MONTH_NAMES[now.getMonth()] + ' ' + now.getFullYear();
-  const weekNum  = getWeekNumber(now);
-  const weekStr  = `Week ${weekNum}`;
-
-  const row = [
-    timestamp,
-    pendingTx.description,
-    pendingTx.amount,
-    pendingTx.category,
-    monthStr,
-    weekStr,
-  ];
-
-  try {
-    await appendRow(row);
-    showToast(`Rp ${pendingTx.amount.toLocaleString('id-ID')} — ${pendingTx.category} ✓`, 'success');
-
-    addToRecent({
-      timestamp: now,
-      description: pendingTx.description,
-      amount: pendingTx.amount,
-      category: pendingTx.category,
-    });
-
-    document.getElementById('input-desc').value = '';
-    document.getElementById('input-amount').value = '';
-    document.getElementById('category-confirm').classList.add('hidden');
-    document.getElementById('input-desc').focus();
-    pendingTx = null;
-
-  } catch (e) {
-    showToast('Gagal simpan: ' + e.message, 'error');
-  }
+function getSelectedEditCategory() {
+  const sel = document.querySelector('#edit-category-chips .cat-chip.selected');
+  return sel ? sel.dataset.cat : 'Others';
 }
 
-function cancelConfirm() {
-  document.getElementById('category-confirm').classList.add('hidden');
-  pendingTx = null;
-}
+async function saveEdit() {
+  if (!editTarget) return;
 
-// ============================================
-// RECENT TRANSACTIONS (Input Tab)
-// ============================================
+  const newDesc = document.getElementById('edit-desc').value.trim();
+  const newAmount = parseInt(document.getElementById('edit-amount').value.replace(/[^\d]/g, ''), 10);
+  const newCategory = getSelectedEditCategory();
 
-let recentItems = [];
+  if (!newDesc) { showToast('Deskripsi tidak boleh kosong', 'error'); return; }
+  if (!newAmount || newAmount <= 0) { showToast('Jumlah tidak valid', 'error'); return; }
 
-function addToRecent(tx) {
-  recentItems.unshift(tx);
-  if (recentItems.length > 5) recentItems.pop();
-  renderRecent();
-}
+  const tx = editTarget.source === 'recent' ? recentItems[editTarget.index] : allTransactions[editTarget.index];
 
-function renderRecent() {
-  const el = document.getElementById('recent-list');
-  if (recentItems.length === 0) {
-    el.innerHTML = '<p class="empty-state">Belum ada pengeluaran hari ini</p>';
-    return;
+  // Update the row in Google Sheet
+  if (editTarget.sheetRow) {
+    try {
+      const row = [tx.timestamp, newDesc, newAmount, newCategory, tx.month, tx.week];
+      await updateRow(editTarget.sheetRow, row);
+      showToast('Berhasil diupdate ✓', 'success');
+    } catch (e) {
+      showToast('Gagal update: ' + e.message, 'error');
+      return;
+    }
   }
-  el.innerHTML = recentItems.map(tx => {
-    const cat = CATEGORIES.find(c => c.name === tx.category) || CATEGORIES[9];
-    return `<div class="transaction-item">
-      <span class="tx-emoji">${cat.emoji}</span>
-      <div class="tx-details">
-        <div class="tx-desc">${escHtml(tx.description)}</div>
-        <div class="tx-cat">${tx.category}</div>
-      </div>
-      <div class="tx-amount">Rp ${tx.amount.toLocaleString('id-ID')}</div>
-    </div>`;
-  }).join('');
+
+  // Update local state
+  tx.description = newDesc;
+  tx.amount = newAmount;
+  tx.category = newCategory;
+
+  // Re-render
+  if (editTarget.source === 'recent') {
+    renderRecent();
+  } else {
+    renderHistoryList(document.getElementById('history-list'));
+  }
+
+  closeEdit();
+}
+
+function closeEdit() {
+  document.getElementById('edit-modal').classList.add('hidden');
+  editTarget = null;
+}
+
+function closeEditIfOverlay(event) {
+  if (event.target === document.getElementById('edit-modal')) closeEdit();
 }
 
 // ============================================
@@ -587,28 +575,23 @@ function renderRecent() {
 // ============================================
 
 async function loadHistory() {
-  if (!accessToken || !Config.sheetId) {
-    showToast('Sign in dan isi Sheet ID dulu', 'error');
-    return;
-  }
+  if (!accessToken || !Config.sheetId) { showToast('Sign in dan isi Sheet ID dulu', 'error'); return; }
 
   const listEl = document.getElementById('history-list');
   listEl.innerHTML = '<p class="empty-state">Memuat...</p>';
 
   try {
     const rows = await readAllRows();
-    if (rows.length <= 1) {
-      listEl.innerHTML = '<p class="empty-state">Belum ada data</p>';
-      return;
-    }
+    if (rows.length <= 1) { listEl.innerHTML = '<p class="empty-state">Belum ada data</p>'; return; }
 
-    allTransactions = rows.slice(1).map(r => ({
+    allTransactions = rows.slice(1).map((r, i) => ({
       timestamp: r[0] || '',
       description: r[1] || '',
       amount: parseInt((r[2] || '0').toString().replace(/[^\d]/g, ''), 10),
       category: r[3] || 'Others',
       month: r[4] || '',
       week: r[5] || '',
+      sheetRow: i + 2, // row 1 is header, data starts at row 2
     })).reverse();
 
     renderHistoryList(listEl);
@@ -618,29 +601,28 @@ async function loadHistory() {
 }
 
 function renderHistoryList(el) {
-  if (allTransactions.length === 0) {
-    el.innerHTML = '<p class="empty-state">Belum ada data</p>';
-    return;
-  }
+  if (allTransactions.length === 0) { el.innerHTML = '<p class="empty-state">Belum ada data</p>'; return; }
 
   let html = '';
   let lastDate = '';
 
-  allTransactions.forEach(tx => {
+  allTransactions.forEach((tx, i) => {
     const dateStr = tx.timestamp.split(',')[0] || tx.timestamp.split(' ')[0] || '';
     if (dateStr !== lastDate) {
       html += `<div class="history-date-group">${dateStr}</div>`;
       lastDate = dateStr;
     }
-
     const cat = CATEGORIES.find(c => c.name === tx.category) || CATEGORIES[9];
-    html += `<div class="transaction-item">
+    html += `<div class="transaction-item" onclick="openEdit('history', ${i})">
       <span class="tx-emoji">${cat.emoji}</span>
       <div class="tx-details">
         <div class="tx-desc">${escHtml(tx.description)}</div>
         <div class="tx-cat">${tx.category}</div>
       </div>
-      <div class="tx-amount">Rp ${tx.amount.toLocaleString('id-ID')}</div>
+      <div class="tx-right">
+        <div class="tx-amount">Rp ${tx.amount.toLocaleString('id-ID')}</div>
+      </div>
+      <span class="tx-edit-hint">✎</span>
     </div>`;
   });
 
@@ -648,7 +630,7 @@ function renderHistoryList(el) {
 }
 
 // ============================================
-// DASHBOARD TAB
+// DASHBOARD
 // ============================================
 
 function changeMonth(delta) {
@@ -658,38 +640,27 @@ function changeMonth(delta) {
 }
 
 function updateMonthLabel() {
-  const el = document.getElementById('dashboard-month');
-  el.textContent = MONTH_NAMES[dashboardMonth.getMonth()] + ' ' + dashboardMonth.getFullYear();
+  document.getElementById('dashboard-month').textContent =
+    MONTH_NAMES[dashboardMonth.getMonth()] + ' ' + dashboardMonth.getFullYear();
 }
 
 async function loadDashboard() {
-  if (!accessToken || !Config.sheetId) {
-    showToast('Sign in dan isi Sheet ID dulu', 'error');
-    return;
-  }
-
+  if (!accessToken || !Config.sheetId) { showToast('Sign in dan isi Sheet ID dulu', 'error'); return; }
   showToast('Memuat dashboard...', 'info');
-
   try {
     const rows = await readAllRows();
-    allTransactions = rows.slice(1).map(r => ({
-      timestamp: r[0] || '',
-      description: r[1] || '',
+    allTransactions = rows.slice(1).map((r, i) => ({
+      timestamp: r[0] || '', description: r[1] || '',
       amount: parseInt((r[2] || '0').toString().replace(/[^\d]/g, ''), 10),
-      category: r[3] || 'Others',
-      month: r[4] || '',
-      week: r[5] || '',
+      category: r[3] || 'Others', month: r[4] || '', week: r[5] || '',
+      sheetRow: i + 2,
     })).reverse();
-
     renderDashboardData();
-  } catch (e) {
-    showToast('Error: ' + e.message, 'error');
-  }
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
 }
 
 function renderDashboardData() {
   updateMonthLabel();
-
   const targetMonth = MONTH_NAMES[dashboardMonth.getMonth()] + ' ' + dashboardMonth.getFullYear();
   const filtered = allTransactions.filter(tx => tx.month === targetMonth);
 
@@ -697,22 +668,17 @@ function renderDashboardData() {
   const daysInMonth = new Date(dashboardMonth.getFullYear(), dashboardMonth.getMonth() + 1, 0).getDate();
   const today = new Date();
   const daysSoFar = (dashboardMonth.getFullYear() === today.getFullYear() && dashboardMonth.getMonth() === today.getMonth())
-    ? today.getDate()
-    : daysInMonth;
+    ? today.getDate() : daysInMonth;
   const avg = daysSoFar > 0 ? Math.round(total / daysSoFar) : 0;
 
   const catTotals = {};
-  filtered.forEach(tx => {
-    catTotals[tx.category] = (catTotals[tx.category] || 0) + tx.amount;
-  });
-
+  filtered.forEach(tx => { catTotals[tx.category] = (catTotals[tx.category] || 0) + tx.amount; });
   const topCat = Object.entries(catTotals).sort((a, b) => b[1] - a[1])[0];
 
   document.getElementById('sum-total').textContent = 'Rp ' + total.toLocaleString('id-ID');
   document.getElementById('sum-avg').textContent = 'Rp ' + avg.toLocaleString('id-ID');
   document.getElementById('sum-top').textContent = topCat
-    ? `${(CATEGORIES.find(c => c.name === topCat[0]) || {}).emoji || ''} ${topCat[0]}`
-    : '-';
+    ? `${(CATEGORIES.find(c => c.name === topCat[0]) || {}).emoji || ''} ${topCat[0]}` : '-';
 
   renderPieChart(catTotals);
 
@@ -726,42 +692,23 @@ function renderDashboardData() {
 
 function renderPieChart(catTotals) {
   const ctx = document.getElementById('chart-pie');
-  const labels = [];
-  const data = [];
-  const colors = [];
-
+  const labels = [], data = [], colors = [];
   Object.entries(catTotals).sort((a, b) => b[1] - a[1]).forEach(([name, amount]) => {
     const cat = CATEGORIES.find(c => c.name === name);
     labels.push((cat?.emoji || '') + ' ' + name);
     data.push(amount);
     colors.push(cat?.color || '#94a3b8');
   });
-
   if (pieChart) pieChart.destroy();
-
-  if (data.length === 0) {
-    pieChart = null;
-    return;
-  }
-
+  if (data.length === 0) { pieChart = null; return; }
   pieChart = new Chart(ctx, {
     type: 'doughnut',
-    data: {
-      labels,
-      datasets: [{ data, backgroundColor: colors, borderWidth: 0 }],
-    },
+    data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 0 }] },
     options: {
       responsive: true,
       plugins: {
-        legend: {
-          position: 'bottom',
-          labels: { font: { family: 'Inter', size: 11 }, padding: 12 },
-        },
-        tooltip: {
-          callbacks: {
-            label: (item) => `Rp ${item.raw.toLocaleString('id-ID')}`,
-          },
-        },
+        legend: { position: 'bottom', labels: { font: { family: 'Inter', size: 11 }, padding: 12 } },
+        tooltip: { callbacks: { label: (item) => `Rp ${item.raw.toLocaleString('id-ID')}` } },
       },
     },
   });
@@ -769,49 +716,20 @@ function renderPieChart(catTotals) {
 
 function renderBarChart(dailyTotals) {
   const ctx = document.getElementById('chart-bar');
-
   const sorted = Object.entries(dailyTotals).sort((a, b) => a[0].localeCompare(b[0]));
   const labels = sorted.map(([d]) => d);
   const data = sorted.map(([, v]) => v);
-
   if (barChart) barChart.destroy();
-
-  if (data.length === 0) {
-    barChart = null;
-    return;
-  }
-
+  if (data.length === 0) { barChart = null; return; }
   barChart = new Chart(ctx, {
     type: 'bar',
-    data: {
-      labels,
-      datasets: [{
-        data,
-        backgroundColor: '#1e3a5f',
-        borderRadius: 4,
-      }],
-    },
+    data: { labels, datasets: [{ data, backgroundColor: '#1e3a5f', borderRadius: 4 }] },
     options: {
       responsive: true,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: (item) => `Rp ${item.raw.toLocaleString('id-ID')}`,
-          },
-        },
-      },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: (item) => `Rp ${item.raw.toLocaleString('id-ID')}` } } },
       scales: {
-        x: {
-          ticks: { font: { family: 'Inter', size: 10 }, maxRotation: 45 },
-          grid: { display: false },
-        },
-        y: {
-          ticks: {
-            font: { family: 'Inter', size: 10 },
-            callback: (v) => v >= 1000000 ? (v/1000000).toFixed(1)+'jt' : v >= 1000 ? (v/1000)+'rb' : v,
-          },
-        },
+        x: { ticks: { font: { family: 'Inter', size: 10 }, maxRotation: 45 }, grid: { display: false } },
+        y: { ticks: { font: { family: 'Inter', size: 10 }, callback: (v) => v >= 1000000 ? (v/1000000).toFixed(1)+'jt' : v >= 1000 ? (v/1000)+'rb' : v } },
       },
     },
   });
@@ -824,20 +742,12 @@ function renderBarChart(dailyTotals) {
 function switchTab(tab) {
   document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
-
   document.getElementById('tab-' + tab).classList.add('active');
   document.querySelector(`.nav-btn[data-tab="${tab}"]`).classList.add('active');
 
-  if (tab === 'history' && allTransactions.length === 0 && accessToken) {
-    loadHistory();
-  }
-  if (tab === 'dashboard' && allTransactions.length === 0 && accessToken) {
-    loadDashboard();
-  }
-  if (tab === 'dashboard') {
-    updateMonthLabel();
-    if (allTransactions.length > 0) renderDashboardData();
-  }
+  if (tab === 'history' && allTransactions.length === 0 && accessToken) loadHistory();
+  if (tab === 'dashboard' && allTransactions.length === 0 && accessToken) loadDashboard();
+  if (tab === 'dashboard') { updateMonthLabel(); if (allTransactions.length > 0) renderDashboardData(); }
 }
 
 // ============================================
@@ -852,13 +762,10 @@ function loadSettingsUI() {
 function saveGoogleSettings() {
   const clientId = document.getElementById('set-client-id').value.trim();
   const sheetId  = document.getElementById('set-sheet-id').value.trim();
-
   if (!clientId) { showToast('Client ID tidak boleh kosong', 'error'); return; }
   if (!sheetId)  { showToast('Sheet ID tidak boleh kosong', 'error'); return; }
-
   Config.set('clientId', clientId);
   Config.set('sheetId', sheetId);
-
   tryInitGoogle();
   showToast('Google settings tersimpan ✓', 'success');
 }
