@@ -18,6 +18,30 @@
   <!-- Toast -->
   <div id="toast" class="toast"></div>
 
+  <!-- Edit Modal -->
+  <div id="edit-modal" class="modal-overlay hidden" onclick="closeEditIfOverlay(event)">
+    <div class="modal-content">
+      <h3 class="modal-title">Edit Transaksi</h3>
+
+      <label class="input-label">Deskripsi</label>
+      <input type="text" id="edit-desc" class="input-field" autocomplete="off">
+
+      <label class="input-label">Jumlah (Rp)</label>
+      <div class="amount-wrapper">
+        <span class="currency-prefix">Rp</span>
+        <input type="text" id="edit-amount" class="input-field input-amount" inputmode="numeric" autocomplete="off">
+      </div>
+
+      <label class="input-label">Kategori</label>
+      <div id="edit-category-chips" class="category-chips"></div>
+
+      <div class="modal-actions">
+        <button class="btn-cancel" onclick="closeEdit()">Batal</button>
+        <button class="btn-save" onclick="saveEdit()">Simpan</button>
+      </div>
+    </div>
+  </div>
+
   <!-- App Header -->
   <header class="app-header">
     <div class="header-left">
@@ -48,17 +72,10 @@
         </button>
       </div>
 
-      <!-- Category Confirmation -->
-      <div id="category-confirm" class="category-confirm hidden">
-        <p class="confirm-label">Kategori:</p>
-        <div id="category-chips" class="category-chips"></div>
-        <button class="btn-save" onclick="confirmSave()">Simpan ✓</button>
-        <button class="btn-cancel" onclick="cancelConfirm()">Batal</button>
-      </div>
-
-      <!-- Recent (last 3) -->
+      <!-- Recent -->
       <div id="recent-section" class="recent-section">
         <h3 class="section-title">Terakhir ditambahkan</h3>
+        <p class="section-hint">Tap item untuk edit</p>
         <div id="recent-list" class="recent-list">
           <p class="empty-state">Belum ada pengeluaran hari ini</p>
         </div>
@@ -71,6 +88,7 @@
         <h2 class="tab-title">Riwayat</h2>
         <button class="btn-refresh" onclick="loadHistory()">↻</button>
       </div>
+      <p class="section-hint" style="margin-bottom:12px">Tap item untuk edit</p>
       <div id="history-list" class="history-list">
         <p class="empty-state">Tap ↻ untuk memuat riwayat</p>
       </div>
@@ -144,7 +162,7 @@
       </div>
 
       <div class="settings-card">
-        <p class="version-text">Dompet v1.0 — by Farras</p>
+        <p class="version-text">Dompet v1.1 — by Farras</p>
       </div>
     </section>
 
