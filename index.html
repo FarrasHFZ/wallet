@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
+  <meta name="theme-color" content="#1e3a5f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Wallet Tracker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+
+  <div id="toast" class="toast"></div>
+
+  <!-- Edit Modal -->
+  <div id="edit-modal" class="modal-overlay hidden" onclick="closeEditIfOverlay(event)">
+    <div class="modal-content">
+      <h3 class="modal-title">Edit Transaksi</h3>
+
+      <label class="input-label">Deskripsi</label>
+      <input type="text" id="edit-desc" class="input-field" autocomplete="off">
+
+      <label class="input-label">Jumlah (Rp)</label>
+      <div class="amount-wrapper">
+        <span class="currency-prefix">Rp</span>
+        <input type="text" id="edit-amount" class="input-field input-amount" inputmode="numeric" autocomplete="off">
+      </div>
+
+      <label class="input-label">Tanggal</label>
+      <input type="date" id="edit-date" class="input-field">
+
+      <label class="input-label">Kategori</label>
+      <div id="edit-category-chips" class="category-chips"></div>
+
+      <div class="modal-actions">
+        <button class="btn-cancel" onclick="closeEdit()">Batal</button>
+        <button class="btn-save" onclick="saveEdit()">Simpan</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Header -->
+  <header class="app-header">
+    <div class="header-left">
+      <span class="logo">💸</span>
+      <h1>Wallet Tracker</h1>
+    </div>
+    <div id="auth-status" class="auth-status"></div>
+  </header>
+
+  <main id="main-content">
+
+    <!-- INPUT TAB -->
+    <section id="tab-input" class="tab-content active">
+      <div class="input-card">
+        <label for="input-desc" class="input-label">Beli apa?</label>
+        <input type="text" id="input-desc" class="input-field" placeholder="mie ayam, kopi, grab..." autocomplete="off">
+
+        <label for="input-amount" class="input-label">Berapa?</label>
+        <div class="amount-wrapper">
+          <span class="currency-prefix">Rp</span>
+          <input type="text" id="input-amount" class="input-field input-amount" inputmode="numeric" placeholder="15000" autocomplete="off">
+        </div>
+
+        <label class="input-label">Tanggal</label>
+        <div class="date-toggle">
+          <button id="btn-today" class="date-pill active" onclick="setDateToday()">Hari Ini</button>
+          <div class="date-pick-wrapper">
+            <input type="date" id="input-date" class="date-pick" onchange="setDateCustom()">
+          </div>
+        </div>
+
+        <button id="btn-submit" class="btn-primary" onclick="handleSubmit()">
+          <span id="btn-submit-text">Tambah Pengeluaran</span>
+          <span id="btn-submit-loader" class="loader hidden"></span>
+        </button>
+      </div>
+
+      <!-- Today's total -->
+      <div id="today-total" class="today-total hidden">
+        <span class="today-label">Total hari ini</span>
+        <span id="today-total-amount" class="today-amount">Rp 0</span>
+      </div>
+
+      <!-- Recent -->
+      <div id="recent-section" class="recent-section">
+        <h3 class="section-title">Terakhir ditambahkan</h3>
+        <p class="section-hint">Tap item untuk edit</p>
+        <div id="recent-list" class="recent-list">
+          <p class="empty-state">📭 Belum ada pengeluaran</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- HISTORY TAB -->
+    <section id="tab-history" class="tab-content">
+      <div class="history-header">
+        <h2 class="tab-title">Spending History</h2>
+        <button class="btn-refresh" onclick="loadHistory()">↻</button>
+      </div>
+      <p class="section-hint" style="margin-bottom:12px">Tap item untuk edit</p>
+      <div id="history-list" class="history-list">
+        <p class="empty-state">Tap ↻ untuk memuat riwayat</p>
+      </div>
+    </section>
+
+    <!-- DASHBOARD TAB -->
+    <section id="tab-dashboard" class="tab-content">
+      <h2 class="tab-title">Dashboard</h2>
+      <div class="month-selector">
+        <button onclick="changeMonth(-1)">◀</button>
+        <span id="dashboard-month">Juni 2026</span>
+        <button onclick="changeMonth(1)">▶</button>
+      </div>
+      <div class="summary-cards">
+        <div class="summary-card">
+          <span class="summary-value" id="sum-total">Rp 0</span>
+          <span class="summary-label">Total Bulan Ini</span>
+        </div>
+        <div class="summary-card">
+          <span class="summary-value" id="sum-avg">Rp 0</span>
+          <span class="summary-label">Rata-rata / Hari</span>
+        </div>
+        <div class="summary-card accent">
+          <span class="summary-value" id="sum-top">-</span>
+          <span class="summary-label">Kategori Terbanyak</span>
+        </div>
+      </div>
+      <div class="chart-container">
+        <h3 class="chart-title">Per Kategori</h3>
+        <canvas id="chart-pie"></canvas>
+      </div>
+      <div class="chart-container">
+        <h3 class="chart-title">Harian</h3>
+        <canvas id="chart-bar"></canvas>
+      </div>
+      <button class="btn-refresh-dashboard" onclick="loadDashboard()">Muat Ulang Dashboard ↻</button>
+    </section>
+
+    <!-- SETTINGS TAB -->
+    <section id="tab-settings" class="tab-content">
+      <h2 class="tab-title">Pengaturan</h2>
+      <div class="settings-card">
+        <h3 class="settings-section-title">Google Cloud</h3>
+        <label class="input-label">Google Client ID</label>
+        <input type="text" id="set-client-id" class="input-field" placeholder="xxxx.apps.googleusercontent.com">
+        <label class="input-label">Google Sheet ID</label>
+        <input type="text" id="set-sheet-id" class="input-field" placeholder="1aBcDeFgHiJkLmNoPqRsTuVwXyZ...">
+        <button class="btn-secondary" onclick="saveGoogleSettings()">Simpan Google Settings</button>
+      </div>
+      <div class="settings-card">
+        <h3 class="settings-section-title">Akun Google</h3>
+        <div id="settings-auth">
+          <button class="btn-google" onclick="handleSignIn()">Sign in with Google</button>
+        </div>
+      </div>
+      <div class="settings-card">
+        <h3 class="settings-section-title">Sheet Setup</h3>
+        <p class="settings-note">Pastikan Google Sheet kamu punya sheet bernama <strong>Transactions</strong> dengan header:</p>
+        <code class="header-preview">Timestamp | Description | Amount | Category | Month | Week</code>
+        <button class="btn-secondary" onclick="initSheetHeaders()">Auto-Setup Headers</button>
+      </div>
+      <div class="settings-card">
+        <p class="version-text">Wallet Tracker v1.3 — by Farras</p>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Bottom Navigation -->
+  <nav class="bottom-nav">
+    <button class="nav-btn active" data-tab="input" onclick="switchTab('input')">
+      <span class="nav-icon">✏️</span>
+      <span class="nav-label">Input</span>
+    </button>
+    <button class="nav-btn" data-tab="history" onclick="switchTab('history')">
+      <span class="nav-icon">📋</span>
+      <span class="nav-label">History</span>
+    </button>
+    <button class="nav-btn" data-tab="dashboard" onclick="switchTab('dashboard')">
+      <span class="nav-icon">📊</span>
+      <span class="nav-label">Dashboard</span>
+    </button>
+    <button class="nav-btn" data-tab="settings" onclick="switchTab('settings')">
+      <span class="nav-icon">⚙️</span>
+      <span class="nav-label">Setting</span>
+    </button>
+  </nav>
+
+  <script src="app.js"></script>
+</body>
+</html>
